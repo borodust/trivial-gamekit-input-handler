@@ -115,9 +115,9 @@
                         :centered))
 
 
-(defun %bind-gamepad-input (input-handler gamepad)
+(defun %bind-gamepad-input (input-handler)
   (with-slots (gamepad-map bag) input-handler
-    (flet ((process-button (button state)
+    (flet ((process-button (gamepad button state)
              (let ((input-button (gamepad-button->input button)))
                (case state
                  (:pressed
@@ -129,47 +129,64 @@
                   (let ((*gamepad* gamepad))
                     (button-released input-handler input-button))))))
            (dpad-processor (state)
-             (lambda ()
+             (lambda (gamepad)
                (let ((*gamepad* gamepad))
                  (dpad-changed input-handler state)))))
-      (gamekit:bind-gamepad-any-button gamepad #'process-button)
+      (gamekit:bind-gamepad-any-button #'process-button)
       (loop for state in +dpad-states+
-            do (gamekit:bind-gamepad-dpad gamepad state (dpad-processor state)))
-      (setf (gethash gamepad gamepad-map) (make-gamepad))
-      (labels ((%gamepad ()
-                 (gethash gamepad gamepad-map))
-               (%update-stick-fu (accessor)
-                 (lambda (x y)
-                   (let ((coords (funcall accessor (%gamepad))))
-                     (setf (gamekit:x coords) x
-                           (gamekit:y coords) y))))
-               (%update-left-trigger (value)
-                 (setf (gamepad-left-trigger (%gamepad)) value))
-               (%update-right-trigger (value)
-                 (setf (gamepad-right-trigger (%gamepad)) value)))
-        (gamekit:bind-gamepad-stick gamepad :left
+            do (gamekit:bind-gamepad-dpad state (dpad-processor state)))
+      (labels ((%update-stick-fu (accessor)
+                 (lambda (gamepad x y)
+                   (bodge-util:when-let ((gamepad (gethash gamepad gamepad-map)))
+                     (let ((coords (funcall accessor gamepad)))
+                       (setf (gamekit:x coords) x
+                             (gamekit:y coords) y)))))
+               (%update-left-trigger (gamepad value)
+                 (bodge-util:when-let ((gamepad (gethash gamepad gamepad-map)))
+                   (setf (gamepad-left-trigger gamepad) value)))
+               (%update-right-trigger (gamepad value)
+                 (bodge-util:when-let ((gamepad (gethash gamepad gamepad-map)))
+                   (setf (gamepad-right-trigger gamepad) value))))
+        (gamekit:bind-gamepad-stick :left
                                     (%update-stick-fu #'gamepad-left-stick))
-        (gamekit:bind-gamepad-stick gamepad :right
+        (gamekit:bind-gamepad-stick :right
                                     (%update-stick-fu #'gamepad-right-stick))
-        (gamekit:bind-gamepad-trigger gamepad :left #'%update-left-trigger)
-        (gamekit:bind-gamepad-trigger gamepad :right #'%update-right-trigger)))))
+        (gamekit:bind-gamepad-trigger :left #'%update-left-trigger)
+        (gamekit:bind-gamepad-trigger :right #'%update-right-trigger)))))
 
 
-(defun %unbind-gamepad-input (input-handler gamepad)
+(defun %unbind-gamepad-input (input-handler)
+  (declare (ignore input-handler))
+  (gamekit:bind-gamepad-any-button nil)
+  (loop for state in +dpad-states+
+        do (gamekit:bind-gamepad-dpad state nil))
+  (gamekit:bind-gamepad-stick :left nil)
+  (gamekit:bind-gamepad-stick :right nil)
+  (gamekit:bind-gamepad-trigger :left nil)
+  (gamekit:bind-gamepad-trigger :right nil))
+
+
+(defun register-gamepad (input-handler gamepad)
   (with-slots (gamepad-map) input-handler
-    (setf (gethash gamepad gamepad-map) nil)))
+    (setf (gethash gamepad gamepad-map) (make-gamepad))))
+
+
+(defun remove-gamepad (input-handler gamepad)
+  (with-slots (gamepad-map) input-handler
+    (remhash gamepad gamepad-map)))
 
 
 (defun activate-input-handler (input-handler)
   (with-slots (cursor bag) input-handler
+    (%bind-gamepad-input input-handler)
     (gamekit:bind-any-gamepad (lambda (gamepad state)
                                 (if (eq :connected state)
                                     (progn
-                                      (gamepad-connected input-handler gamepad)
-                                      (%bind-gamepad-input input-handler gamepad))
+                                      (register-gamepad input-handler gamepad)
+                                      (gamepad-connected input-handler gamepad))
                                     (progn
                                       (gamepad-disconnected input-handler gamepad)
-                                      (%unbind-gamepad-input input-handler gamepad)))))
+                                      (remove-gamepad input-handler gamepad)))))
     (gamekit:bind-cursor (lambda (x y)
                            (setf (gamekit:x cursor) x
                                  (gamekit:y cursor) y)))
@@ -190,4 +207,5 @@
           (gamekit:y cursor) 0)
     (gamekit:bind-cursor nil)
     (setf bag nil)
-    (gamekit:bind-any-button nil)))
+    (gamekit:bind-any-button nil)
+    (%unbind-gamepad-input input-handler)))
